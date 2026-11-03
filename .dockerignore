@@ -1,0 +1,7 @@
+node_modules
+bin
+.git
+.github
+deploy
+tests
+README.md

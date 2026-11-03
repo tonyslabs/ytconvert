@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ytconvert</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <h1>ytconvert</h1>
+      <p class="sub">Audio de YouTube en la mejor calidad disponible, con metadata y dónde más escucharlo.</p>
+    </header>
+
+    <form id="form" class="search">
+      <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required autocomplete="off" autofocus>
+      <button id="go" type="submit">Analizar</button>
+    </form>
+    <p id="error" class="error" hidden></p>
+    <p id="loading" class="muted" hidden>Consultando YouTube…</p>
+
+    <section id="result" hidden>
+      <div class="card head">
+        <img id="cover" alt="" width="160" height="160">
+        <div class="fields">
+          <label>Artista <input id="artist"></label>
+          <label>Título <input id="title"></label>
+          <label>Álbum <input id="album" placeholder="(opcional)"></label>
+          <p id="guessNote" class="muted small"></p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Descargar</h2>
+        <div class="cols">
+          <div>
+            <h3>Pista de YouTube</h3>
+            <div id="sources" class="options"></div>
+          </div>
+          <div>
+            <h3>Formato de salida</h3>
+            <div id="outputs" class="options"></div>
+          </div>
+        </div>
+        <p class="note">YouTube solo publica audio con pérdida (Opus ~160 kbps o AAC ~128 kbps). FLAC/WAV guardan ese audio sin degradarlo más, pero <b>no recuperan calidad</b> que YouTube ya no tiene. Para tener la mejor copia real usá <i>Original</i> con la pista de mayor bitrate.</p>
+        <button id="download" class="primary">Descargar</button>
+        <span id="dlStatus" class="muted"></span>
+      </div>
+
+      <div class="card">
+        <h2>Metadata del video</h2>
+        <dl id="meta"></dl>
+        <details id="descWrap"><summary>Descripción</summary><pre id="desc"></pre></details>
+        <div id="tags" class="chips"></div>
+        <div id="descLinks"></div>
+      </div>
+
+      <div class="card">
+        <h2>En otras plataformas</h2>
+        <p id="linksLoading" class="muted">Buscando…</p>
+        <div id="found"></div>
+        <p id="notFound" class="muted" hidden></p>
+        <h3>Buscar manualmente</h3>
+        <div id="searchLinks" class="search-grid"></div>
+        <button id="rescan" type="button" class="secondary">Volver a buscar con artista/título editados</button>
+      </div>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

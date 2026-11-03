@@ -1,0 +1,14 @@
+{
+  "name": "ytconvert",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Extrae el audio de un link de YouTube en el mejor formato, con metadata y links a otras plataformas",
+  "scripts": {
+    "setup": "bash scripts/setup.sh",
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test tests/"
+  },
+  "engines": { "node": ">=20" }
+}
