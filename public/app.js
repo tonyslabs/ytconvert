@@ -64,15 +64,15 @@ function radio(name, id, checked, label, detail) {
 
 function render() {
   const { meta, guess, formats, outputs } = state;
-  $('applyStatus').textContent = '';
+  state.base = { artist: guess.artist, title: guess.title, album: meta.album || '', cover: meta.thumbnail || '' };
   $('cover').src = meta.thumbnail || '';
   $('artist').value = guess.artist;
   $('title').value = guess.title;
   $('album').value = meta.album || '';
   $('guessNote').textContent = {
-    metadata: 'Artista y título vienen de la metadata de YouTube Music.',
-    title: 'Artista y título deducidos del título del video. Corregilos si hace falta.',
-    channel: 'El título no tiene formato "Artista - Canción": usé el canal como artista. Revisalo.',
+    metadata: 'Desde YouTube Music.',
+    title: 'Deducido del título del video.',
+    channel: 'Usé el canal como artista.',
   }[guess.source];
 
   const src = $('sources');
@@ -119,8 +119,9 @@ async function loadLinks() {
         f.cover ? el('img', { src: f.cover, alt: '', width: 48, height: 48 }) : null,
         el('div', {},
           el('b', {}, f.platform), ` · ${f.artist} — ${f.title}`,
-          el('small', {}, [f.album, f.date, `coincidencia ${f.confidence}`].filter(Boolean).join(' · ')),
+          el('small', {}, [f.album, f.date].filter(Boolean).join(' · ')),
         ),
+        el('small', { class: 'badge', 'data-conf': f.confidence }, `coincidencia ${f.confidence}`),
         link('Abrir', f.url, 'btn')));
     }
     if (r.odesli) {
@@ -129,8 +130,8 @@ async function loadLinks() {
     }
     $('found').replaceChildren(...rows);
     if (!rows.length) {
-      const weak = r.weak.length ? ` Hubo resultados parecidos pero con baja coincidencia (${r.weak.map((w) => `${w.platform}: ${w.artist} — ${w.title}`).join('; ')}).` : '';
-      $('notFound').textContent = `No encontré esta canción en catálogos (normal si el artista la sube solo a YouTube).${weak}`;
+      const weak = r.weak.length ? ` Parecidos: (${r.weak.map((w) => `${w.platform}: ${w.artist} — ${w.title}`).join('; ')}).` : '';
+      $('notFound').textContent = `No está en otras plataformas.${weak}`;
       $('notFound').hidden = false;
     }
     $('searchLinks').replaceChildren(...r.searchLinks.map((s) =>
@@ -152,7 +153,7 @@ const dl = (rows) => el('dl', {}, ...rows.filter(([, v]) => v != null && v !== '
 
 function renderTabs() {
   $('platformTabs').replaceChildren(...state.platforms.map((p) => {
-    const b = el('button', { type: 'button', class: 'tab' + (p.id === state.platform ? ' active' : ''), role: 'tab' }, p.label, p.ready ? null : el('small', {}, 'pronto'));
+    const b = el('button', { type: 'button', class: 'tab' + (p.id === state.platform ? ' active' : ''), role: 'tab', 'aria-selected': String(p.id === state.platform) }, p.label, p.ready ? null : el('small', {}, 'pronto'));
     if (!p.ready) b.title = p.note || '';
     b.addEventListener('click', () => { state.platform = p.id; renderTabs(); loadPlatform(); });
     return b;
@@ -163,7 +164,7 @@ function renderTrack(t) {
   const a = t.album;
   return el('div', { class: 'plat' },
     a?.cover ? el('img', { src: a.cover, alt: '', width: 120, height: 120, class: 'plat-cover' }) : null,
-    el('p', {}, link(t.title, t.url), ` — ${t.artist}`, el('small', { class: 'badge' }, `coincidencia ${t.confidence}`)),
+    el('p', {}, link(t.title, t.url), ` — ${t.artist}`, el('small', { class: 'badge', 'data-conf': t.confidence }, `coincidencia ${t.confidence}`)),
     dl([
       ['Álbum', a ? link(a.title, a.url) : null],
       ['Tipo', a?.recordType],
@@ -197,13 +198,14 @@ async function loadPlatform() {
   const p = state.platforms.find((x) => x.id === state.platform);
   $('platTrack').replaceChildren();
   $('platArtist').replaceChildren();
-  $('applyTags').hidden = true;
-  $('applyStatus').textContent = '';
+  $('applyBox').hidden = true;
+  if (state.parts?.track) { $('cover').src = state.base.cover; state.applied = null; }
+  state.parts = { artist: false, track: false };
   state.found = null;
   if (!p.ready) {
-    $('platformStatus').textContent = p.note || 'Aún no disponible.';
-    $('platTrack').append(el('p', { class: 'muted' }, 'Espacio reservado para los datos de la pista.'));
-    $('platArtist').append(el('p', { class: 'muted' }, 'Espacio reservado para los datos del artista.'));
+    $('platformStatus').textContent = '';
+    $('platTrack').append(el('p', { class: 'muted' }, 'Próximamente.'));
+    $('platArtist').append(el('p', { class: 'muted' }, 'Próximamente.'));
     return;
   }
   $('platformStatus').textContent = `Consultando ${p.label}…`;
@@ -216,28 +218,67 @@ async function loadPlatform() {
     $('platArtist').replaceChildren(
       r.artist ? renderArtist(r.artist) : el('p', { class: 'muted' }, r.artistNote || 'Sin datos.'),
       r.artist && r.artistNote ? el('p', { class: 'muted small' }, r.artistNote) : null);
-    $('applyTags').hidden = !r.track;
+    renderPick(r, p);
   } catch (err) {
     if (seq === platSeq) $('platformStatus').textContent = `No se pudo consultar ${p.label}: ${err.message}`;
   }
 }
 
-$('applyTags').addEventListener('click', () => {
+function pickOpt(value, checked, disabled, label, detail) {
+  const input = el('input', { type: 'checkbox', name: 'apply', value });
+  input.checked = checked;
+  input.disabled = disabled;
+  input.addEventListener('change', () => (value === 'track' ? setTrack : setArtist)(input.checked));
+  return el('label', { class: 'opt' + (disabled ? ' off' : '') }, input, el('span', {}, label, el('small', {}, detail)));
+}
+
+// Marcar/desmarcar una ficha la aplica o la revierte al instante; Descargar usa lo que se ve.
+function setArtist(on) {
+  const a = state.found?.artist;
+  state.parts.artist = on && !!a;
+  $('artist').value = state.parts.artist ? a.name : state.base.artist;
+}
+
+function setTrack(on) {
   const t = state.found?.track;
-  if (!t) return;
-  $('artist').value = t.artist;
-  $('title').value = t.title;
-  if (t.album) $('album').value = t.album.title;
-  state.applied = { date: t.releaseDate, genre: t.album?.genres?.[0], isrc: t.isrc, coverUrl: t.album?.cover };
-  $('cover').src = t.album?.cover || $('cover').src;
-  $('applyStatus').textContent = 'Aplicado: artista, título, álbum, fecha, género, ISRC y carátula de Deezer.';
-});
+  const b = state.base;
+  state.parts.track = on && !!t;
+  if (state.parts.track) {
+    $('title').value = t.title;
+    if (t.album) $('album').value = t.album.title;
+    state.applied = { date: t.releaseDate, genre: t.album?.genres?.[0], isrc: t.isrc, coverUrl: t.album?.cover };
+    if (t.album?.cover) $('cover').src = t.album.cover;
+  } else {
+    $('title').value = b.title;
+    $('album').value = b.album;
+    state.applied = null;
+    $('cover').src = b.cover;
+  }
+}
+
+// Ofrece usar la ficha de la pista, la del artista o ambas, según lo que haya coincidido.
+// El artista (nombre exacto) se aplica solo; la pista solo si la coincidencia es alta.
+function renderPick(r, p) {
+  const t = r.track;
+  const a = r.artist;
+  if (!t && !a) return;
+  $('applySrc').textContent = p.label;
+  $('applyPick').replaceChildren(
+    pickOpt('artist', !!a, !a, a ? `Artista · ${a.name}` : 'Artista', a ? 'Nombre' : 'Sin coincidencia'),
+    pickOpt('track', false, !t, t ? `Pista · ${t.title}` : 'Pista', t ? 'Título, álbum, fecha, género, ISRC, carátula' : 'Sin coincidencia'));
+  $('applyBox').hidden = false;
+  if (a) setArtist(true);
+  if (t && t.confidence === 'alta') {
+    document.querySelector('input[name=apply][value=track]').checked = true;
+    setTrack(true);
+  }
+}
 
 $('download').addEventListener('click', async () => {
   const btn = $('download');
   const status = $('dlStatus');
   btn.disabled = true;
-  status.textContent = 'Descargando y convirtiendo… puede tardar un poco.';
+  status.textContent = 'Convirtiendo…';
   showError('');
   try {
     const res = await api('/api/download', {

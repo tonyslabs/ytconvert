@@ -3,83 +3,158 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ytconvert</title>
+  <title>Drstify</title>
+  <meta name="description" content="Drstify — audio de YouTube con sus datos.">
+  <meta name="theme-color" content="#EEE7D7">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800;900&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap">
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main>
-    <header>
-      <h1>ytconvert</h1>
-      <p class="sub">Audio de YouTube en la mejor calidad disponible, con metadata y dónde más escucharlo.</p>
-    </header>
+  <header class="masthead">
+    <div class="wrap mast-grid">
+      <h1 class="brand">Drstify</h1>
 
-    <form id="form" class="search">
-      <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required autocomplete="off" autofocus>
-      <button id="go" type="submit">Analizar</button>
-    </form>
-    <p id="error" class="error" hidden></p>
-    <p id="loading" class="muted" hidden>Consultando YouTube…</p>
+      <form id="form" class="intake search" autocomplete="off">
+        <label class="intake-label" for="url"><span class="intake-key">A</span>Link de YouTube</label>
+        <div class="intake-row">
+          <input id="url" type="url" placeholder="https://www.youtube.com/watch?v=…" required autocomplete="off" autofocus spellcheck="false">
+          <button id="go" type="submit">Analizar</button>
+        </div>
+      </form>
+
+      <svg class="disc" viewBox="-200 -200 400 400" aria-hidden="true" focusable="false">
+        <defs>
+          <path id="labelArc" d="M 0,-55 A 55 55 0 1 1 -0.01,-55"/>
+        </defs>
+        <circle r="199" fill="#1B1A17"/>
+        <g fill="none" stroke="#3B3830" stroke-width=".8">
+          <circle r="191"/><circle r="185"/><circle r="178"/><circle r="170"/><circle r="164"/>
+          <circle r="157"/><circle r="149"/><circle r="143"/><circle r="136"/><circle r="127"/>
+          <circle r="121"/><circle r="114"/><circle r="106"/><circle r="99"/><circle r="91"/>
+        </g>
+        <path d="M0 0 L148 -134 A200 200 0 0 1 189 -66 Z" fill="#F6F1E6" opacity=".08"/>
+        <path d="M0 0 L-148 134 A200 200 0 0 1 -189 66 Z" fill="#F6F1E6" opacity=".05"/>
+        <circle r="76" fill="#A82D16"/>
+        <circle r="76" fill="none" stroke="#1B1A17" stroke-width="2"/>
+        
+        <text y="-9" text-anchor="middle" font-family="Big Shoulders Display, Arial Narrow, Impact, sans-serif" font-weight="900" font-size="30" fill="#F6F1E6">DRS</text>
+        <circle r="4.5" fill="#EEE7D7"/>
+      </svg>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div class="status-line">
+      <p id="error" class="error" role="alert" hidden></p>
+      <p id="loading" class="muted loading" hidden>Consultando YouTube…</p>
+    </div>
 
     <section id="result" hidden>
-      <div class="card head">
-        <img id="cover" alt="" width="160" height="160">
-        <div class="fields">
-          <label>Artista <input id="artist"></label>
-          <label>Título <input id="title"></label>
-          <label>Álbum <input id="album" placeholder="(opcional)"></label>
-          <p id="guessNote" class="muted small"></p>
-        </div>
-      </div>
 
-      <div class="card">
-        <h2>Descargar</h2>
-        <div class="cols">
-          <div>
-            <h3>Pista de YouTube</h3>
-            <div id="sources" class="options"></div>
-          </div>
-          <div>
-            <h3>Formato de salida</h3>
-            <div id="outputs" class="options"></div>
+      <!-- 01 · Etiqueta -->
+      <section class="sheet" aria-labelledby="h-etiqueta">
+        <header class="sheet-head">
+          <span class="sheet-num" aria-hidden="true">01</span>
+          <h2 id="h-etiqueta">Etiqueta</h2>
+        </header>
+        <div class="sheet-body card head">
+          <figure class="sleeve">
+            <img id="cover" alt="Carátula" width="160" height="160">
+          </figure>
+          <div class="fields">
+            <label class="field field-xl"><span>Artista</span><input id="artist" autocomplete="off" spellcheck="false"></label>
+            <label class="field field-xl"><span>Título</span><input id="title" autocomplete="off" spellcheck="false"></label>
+            <label class="field"><span>Álbum</span><input id="album" placeholder="(opcional)" autocomplete="off"></label>
+            <p id="guessNote" class="muted small guess"></p>
           </div>
         </div>
-        <p class="note">YouTube solo publica audio con pérdida (Opus ~160 kbps o AAC ~128 kbps). FLAC/WAV guardan ese audio sin degradarlo más, pero <b>no recuperan calidad</b> que YouTube ya no tiene. Para tener la mejor copia real usá <i>Original</i> con la pista de mayor bitrate.</p>
-        <button id="download" class="primary">Descargar</button>
-        <span id="dlStatus" class="muted"></span>
-      </div>
+      </section>
 
-      <div class="card">
-        <h2>Metadata del video</h2>
-        <dl id="meta"></dl>
-        <details id="descWrap"><summary>Descripción</summary><pre id="desc"></pre></details>
-        <div id="tags" class="chips"></div>
-        <div id="descLinks"></div>
-      </div>
-
-      <div class="card">
-        <h2>Datos de la plataforma</h2>
-        <p class="muted small">Elegí de qué plataforma tomar los datos de la pista y del artista.</p>
-        <div id="platformTabs" class="tabs" role="tablist"></div>
-        <p id="platformStatus" class="muted"></p>
-        <div class="cols">
-          <div><h3>Pista</h3><div id="platTrack"></div></div>
-          <div><h3>Artista</h3><div id="platArtist"></div></div>
+      <!-- 02 · Corte -->
+      <section class="sheet" aria-labelledby="h-corte">
+        <header class="sheet-head">
+          <span class="sheet-num" aria-hidden="true">02</span>
+          <h2 id="h-corte">Descarga</h2>
+        </header>
+        <div class="sheet-body card">
+          <div class="cols cut-cols">
+            <div class="group">
+              <h3 id="lbl-sources">Pista de YouTube</h3>
+              <div id="sources" class="options" role="radiogroup" aria-labelledby="lbl-sources"></div>
+            </div>
+            <div class="group">
+              <h3 id="lbl-outputs">Formato de salida</h3>
+              <div id="outputs" class="options" role="radiogroup" aria-labelledby="lbl-outputs"></div>
+            </div>
+          </div>
+          <p class="note"><span class="note-mark" aria-hidden="true">*</span><span>YouTube da audio con pérdida: FLAC no mejora la calidad.</span></p>
+          <div id="applyBox" class="apply group" hidden>
+            <h3 id="lbl-apply">Datos de <span id="applySrc"></span></h3>
+            <div id="applyPick" class="options" role="group" aria-labelledby="lbl-apply"></div>
+          </div>
+          <div class="press-row">
+            <button id="download" class="primary" type="button">Descargar</button>
+            <span id="dlStatus" class="muted" aria-live="polite"></span>
+          </div>
         </div>
-        <button id="applyTags" type="button" class="secondary" hidden>Usar datos de la pista en los tags</button>
-        <span id="applyStatus" class="muted small"></span>
-      </div>
+      </section>
 
-      <div class="card">
-        <h2>En otras plataformas</h2>
-        <p id="linksLoading" class="muted">Buscando…</p>
-        <div id="found"></div>
-        <p id="notFound" class="muted" hidden></p>
-        <h3>Buscar manualmente</h3>
-        <div id="searchLinks" class="search-grid"></div>
-        <button id="rescan" type="button" class="secondary">Volver a buscar con artista/título editados</button>
-      </div>
+      <!-- 03 · Ficha del video -->
+      <section class="sheet" aria-labelledby="h-ficha">
+        <header class="sheet-head">
+          <span class="sheet-num" aria-hidden="true">03</span>
+          <h2 id="h-ficha">Ficha del video</h2>
+        </header>
+        <div class="sheet-body card">
+          <dl id="meta" class="ledger"></dl>
+          <details id="descWrap"><summary>Descripción</summary><pre id="desc"></pre></details>
+          <div class="tag-block">
+            <h3>Etiquetas</h3>
+            <div id="tags" class="chips"></div>
+          </div>
+          <div id="descLinks"></div>
+        </div>
+      </section>
+
+      <!-- 04 · Fuente de datos -->
+      <section class="sheet" aria-labelledby="h-fuente">
+        <header class="sheet-head">
+          <span class="sheet-num" aria-hidden="true">04</span>
+          <h2 id="h-fuente">Fuente de datos</h2>
+        </header>
+        <div class="sheet-body card">
+          <div id="platformTabs" class="tabs" role="tablist" aria-label="Plataforma de datos"></div>
+          <div class="tab-panel">
+            <p id="platformStatus" class="muted" aria-live="polite"></p>
+            <div class="cols plat-cols">
+              <div><h3>Pista</h3><div id="platTrack"></div></div>
+              <div><h3>Artista</h3><div id="platArtist"></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 05 · Otras tiendas -->
+      <section class="sheet" aria-labelledby="h-tiendas">
+        <header class="sheet-head">
+          <span class="sheet-num" aria-hidden="true">05</span>
+          <h2 id="h-tiendas">Otras plataformas</h2>
+        </header>
+        <div class="sheet-body card">
+          <p id="linksLoading" class="muted loading">Buscando…</p>
+          <div id="found"></div>
+          <p id="notFound" class="muted" hidden></p>
+          <h3>Buscar a mano</h3>
+          <div id="searchLinks" class="search-grid"></div>
+          <button id="rescan" type="button" class="secondary">Buscar de nuevo</button>
+        </div>
+      </section>
+
     </section>
   </main>
+
   <script src="/app.js"></script>
 </body>
 </html>
