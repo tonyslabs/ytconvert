@@ -57,6 +57,19 @@
       </div>
 
       <div class="card">
+        <h2>Datos de la plataforma</h2>
+        <p class="muted small">Elegí de qué plataforma tomar los datos de la pista y del artista.</p>
+        <div id="platformTabs" class="tabs" role="tablist"></div>
+        <p id="platformStatus" class="muted"></p>
+        <div class="cols">
+          <div><h3>Pista</h3><div id="platTrack"></div></div>
+          <div><h3>Artista</h3><div id="platArtist"></div></div>
+        </div>
+        <button id="applyTags" type="button" class="secondary" hidden>Usar datos de la pista en los tags</button>
+        <span id="applyStatus" class="muted small"></span>
+      </div>
+
+      <div class="card">
         <h2>En otras plataformas</h2>
         <p id="linksLoading" class="muted">Buscando…</p>
         <div id="found"></div>

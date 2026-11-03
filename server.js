@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { isYouTubeUrl, parseTrack, extractLinks } from './lib/parse.js';
 import { getInfo, audioFormats, normalizeInfo, fetchSource, convert, makeTempDir, removeDir, TARGETS } from './lib/ytdlp.js';
 import { findEverywhere } from './lib/links.js';
+import { listProviders, getProvider } from './lib/providers/index.js';
+import { writeFile } from 'node:fs/promises';
 
 const PORT = Number(process.env.PORT) || 3100;
 const HOST = process.env.HOST || '127.0.0.1';
@@ -58,6 +60,7 @@ async function handleInfo(req, res) {
     formats,
     outputs: Object.keys(TARGETS).map((id) => ({ id, label: OUTPUT_LABELS[id] })),
     descriptionLinks: extractLinks(meta.description),
+    platforms: listProviders(),
   });
 }
 
@@ -65,6 +68,29 @@ async function handleLinks(req, res) {
   const { artist = '', title = '', url } = await readBody(req);
   if (!title.trim() && !artist.trim()) return send(res, 400, { error: 'Falta artista o título.' });
   send(res, 200, await findEverywhere({ artist: artist.trim(), title: title.trim(), ytUrl: url }));
+}
+
+async function handlePlatform(req, res) {
+  const { platform, artist = '', title = '' } = await readBody(req);
+  const p = getProvider(platform);
+  if (!p) return send(res, 400, { error: 'Plataforma desconocida.' });
+  if (!p.ready) return send(res, 501, { error: p.note || 'Esta plataforma aún no está disponible.' });
+  if (!title.trim() && !artist.trim()) return send(res, 400, { error: 'Falta artista o título.' });
+  send(res, 200, await p.lookup({ artist: artist.trim(), title: title.trim() }));
+}
+
+// Solo se aceptan carátulas de la CDN de Deezer (evita SSRF hacia otros hosts).
+async function fetchCover(url, dir) {
+  let u;
+  try { u = new URL(url); } catch { return null; }
+  if (u.protocol !== 'https:' || !/(^|\.)dzcdn\.net$/i.test(u.hostname)) return null;
+  const r = await fetch(u, { signal: AbortSignal.timeout(15000) });
+  if (!r.ok || !/^image\//.test(r.headers.get('content-type') || '')) return null;
+  const buf = Buffer.from(await r.arrayBuffer());
+  if (buf.length > 10_000_000) return null;
+  const file = join(dir, 'cover-platform.jpg');
+  await writeFile(file, buf);
+  return file;
 }
 
 async function handleDownload(req, res) {
@@ -77,8 +103,10 @@ async function handleDownload(req, res) {
   jobs++;
   const dir = await makeTempDir();
   try {
-    const { audio, cover } = await fetchSource(b.url, b.source, dir);
-    const year = /^\d{8}$/.test(b.date || '') ? b.date.slice(0, 4) : '';
+    const fetched = await fetchSource(b.url, b.source, dir);
+    const { audio } = fetched;
+    const cover = (b.coverUrl && (await fetchCover(b.coverUrl, dir).catch(() => null))) || fetched.cover;
+    const year = /^\d{8}$/.test(b.date || '') ? b.date.slice(0, 4) : /^\d{4}(-\d{2}-\d{2})?$/.test(b.date || '') ? b.date : '';
     const out = await convert({
       audio,
       cover,
@@ -90,6 +118,8 @@ async function handleDownload(req, res) {
         title: b.title,
         album: b.album,
         date: year,
+        genre: b.genre,
+        isrc: b.isrc,
         comment: `Fuente: ${b.url}`,
       },
     });
@@ -131,6 +161,7 @@ async function serveStatic(req, res) {
 const routes = {
   'POST /api/info': handleInfo,
   'POST /api/links': handleLinks,
+  'POST /api/platform': handlePlatform,
   'POST /api/download': handleDownload,
 };
 

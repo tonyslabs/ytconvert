@@ -52,3 +52,15 @@ a.btn { padding: 6px 14px; border: 1px solid var(--accent); border-radius: 8px; 
   .head { flex-direction: column; }
   dl { grid-template-columns: 90px 1fr; }
 }
+
+.tabs { display: flex; gap: 6px; margin: 12px 0; flex-wrap: wrap; }
+.tab { background: transparent; color: var(--text); border: 1px solid var(--line); padding: 8px 16px; }
+.tab.active { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.tab small { margin-left: 6px; font-weight: 400; opacity: .7; }
+.plat dl { grid-template-columns: 80px 1fr; }
+.plat-cover { border-radius: 8px; float: right; margin: 0 0 8px 12px; object-fit: cover; }
+.plat-cover.round { border-radius: 50%; }
+.plat audio { width: 100%; margin-top: 10px; }
+.badge { margin-left: 8px; padding: 1px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); }
+.list { padding-left: 20px; margin: 0; }
+.list small { color: var(--muted); }

@@ -12,6 +12,7 @@ npm test
 ## Qué hace
 - `POST /api/info`: yt-dlp lee el video → metadata, pistas de audio disponibles, artista/título deducidos, links de plataformas en la descripción.
 - `POST /api/links`: busca la canción en Apple Music (iTunes), Deezer, MusicBrainz y Odesli. Solo marca "encontrado" si título/artista coinciden; si no, ofrece links de búsqueda manual (Spotify, YT Music, SoundCloud, Bandcamp, Tidal, etc.).
+- `POST /api/platform`: datos de la pista y del artista según la plataforma elegida (`lib/providers/`). Hoy solo **Deezer** (sin llave); YouTube y Spotify son espacios reservados. "Usar datos de la pista en los tags" aplica artista, título, álbum, fecha, género, ISRC y carátula 1000×1000 al archivo.
 - `POST /api/download`: baja la pista elegida y la convierte con ffmpeg (FLAC, WAV, MP3 320/V0, M4A, Opus u original sin recodificar) con tags y carátula cuadrada.
 
 ## Calidad

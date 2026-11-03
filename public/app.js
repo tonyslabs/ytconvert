@@ -43,8 +43,11 @@ $('form').addEventListener('submit', async (e) => {
     const url = $('url').value.trim();
     state = await (await api('/api/info', { url })).json();
     state.url = url;
+    state.platform = 'deezer';
+    state.applied = null;
     render();
     loadLinks();
+    loadPlatform();
   } catch (err) {
     showError(err.message);
   } finally {
@@ -61,6 +64,7 @@ function radio(name, id, checked, label, detail) {
 
 function render() {
   const { meta, guess, formats, outputs } = state;
+  $('applyStatus').textContent = '';
   $('cover').src = meta.thumbnail || '';
   $('artist').value = guess.artist;
   $('title').value = guess.title;
@@ -140,7 +144,94 @@ async function loadLinks() {
   }
 }
 
-$('rescan').addEventListener('click', loadLinks);
+$('rescan').addEventListener('click', () => { loadLinks(); loadPlatform(); });
+
+// ---------- datos de la plataforma elegida ----------
+const fmtFans = (n) => (n == null ? '—' : n.toLocaleString('es'));
+const dl = (rows) => el('dl', {}, ...rows.filter(([, v]) => v != null && v !== '' && v !== '—').flatMap(([k, v]) => [el('dt', {}, k), el('dd', {}, v)]));
+
+function renderTabs() {
+  $('platformTabs').replaceChildren(...state.platforms.map((p) => {
+    const b = el('button', { type: 'button', class: 'tab' + (p.id === state.platform ? ' active' : ''), role: 'tab' }, p.label, p.ready ? null : el('small', {}, 'pronto'));
+    if (!p.ready) b.title = p.note || '';
+    b.addEventListener('click', () => { state.platform = p.id; renderTabs(); loadPlatform(); });
+    return b;
+  }));
+}
+
+function renderTrack(t) {
+  const a = t.album;
+  return el('div', { class: 'plat' },
+    a?.cover ? el('img', { src: a.cover, alt: '', width: 120, height: 120, class: 'plat-cover' }) : null,
+    el('p', {}, link(t.title, t.url), ` — ${t.artist}`, el('small', { class: 'badge' }, `coincidencia ${t.confidence}`)),
+    dl([
+      ['Álbum', a ? link(a.title, a.url) : null],
+      ['Tipo', a?.recordType],
+      ['Fecha', t.releaseDate],
+      ['Género', a?.genres?.join(', ')],
+      ['Sello', a?.label],
+      ['Duración', fmtDur(t.duration)],
+      ['ISRC', t.isrc],
+      ['UPC', a?.upc],
+      ['BPM', t.bpm || null],
+      ['Explícita', t.explicit == null ? null : t.explicit ? 'Sí' : 'No'],
+      ['Con', t.contributors?.length > 1 ? t.contributors.join(', ') : null],
+    ]),
+    t.preview ? el('audio', { controls: '', preload: 'none', src: t.preview }) : null);
+}
+
+function renderArtist(a) {
+  return el('div', { class: 'plat' },
+    a.picture ? el('img', { src: a.picture, alt: '', width: 120, height: 120, class: 'plat-cover round' }) : null,
+    el('p', {}, link(a.name, a.url)),
+    dl([['Fans', fmtFans(a.fans)], ['Álbumes', a.albumCount]]),
+    a.topTracks.length ? el('div', {}, el('h3', {}, 'Más escuchadas'), el('ol', { class: 'list' }, ...a.topTracks.map((t) => el('li', {}, link(t.title, t.url), t.album ? el('small', {}, ` · ${t.album}`) : null)))) : null,
+    a.discography.length ? el('div', {}, el('h3', {}, 'Discografía'), el('div', { class: 'chips' }, ...a.discography.map((d) => link(`${d.title}${d.year ? ` (${d.year})` : ''}`, d.url, 'chip')))) : null,
+    a.related.length ? el('div', {}, el('h3', {}, 'Artistas relacionados'), el('div', { class: 'chips' }, ...a.related.map((r) => link(r.name, r.url, 'chip')))) : null);
+}
+
+let platSeq = 0;
+async function loadPlatform() {
+  renderTabs();
+  const seq = ++platSeq;
+  const p = state.platforms.find((x) => x.id === state.platform);
+  $('platTrack').replaceChildren();
+  $('platArtist').replaceChildren();
+  $('applyTags').hidden = true;
+  $('applyStatus').textContent = '';
+  state.found = null;
+  if (!p.ready) {
+    $('platformStatus').textContent = p.note || 'Aún no disponible.';
+    $('platTrack').append(el('p', { class: 'muted' }, 'Espacio reservado para los datos de la pista.'));
+    $('platArtist').append(el('p', { class: 'muted' }, 'Espacio reservado para los datos del artista.'));
+    return;
+  }
+  $('platformStatus').textContent = `Consultando ${p.label}…`;
+  try {
+    const r = await (await api('/api/platform', { platform: p.id, artist: $('artist').value, title: $('title').value })).json();
+    if (seq !== platSeq) return; // llegó tarde: el usuario cambió de pestaña o volvió a buscar
+    state.found = r;
+    $('platformStatus').textContent = '';
+    $('platTrack').replaceChildren(r.track ? renderTrack(r.track) : el('p', { class: 'muted' }, r.trackNote || 'Sin datos.'));
+    $('platArtist').replaceChildren(
+      r.artist ? renderArtist(r.artist) : el('p', { class: 'muted' }, r.artistNote || 'Sin datos.'),
+      r.artist && r.artistNote ? el('p', { class: 'muted small' }, r.artistNote) : null);
+    $('applyTags').hidden = !r.track;
+  } catch (err) {
+    if (seq === platSeq) $('platformStatus').textContent = `No se pudo consultar ${p.label}: ${err.message}`;
+  }
+}
+
+$('applyTags').addEventListener('click', () => {
+  const t = state.found?.track;
+  if (!t) return;
+  $('artist').value = t.artist;
+  $('title').value = t.title;
+  if (t.album) $('album').value = t.album.title;
+  state.applied = { date: t.releaseDate, genre: t.album?.genres?.[0], isrc: t.isrc, coverUrl: t.album?.cover };
+  $('cover').src = t.album?.cover || $('cover').src;
+  $('applyStatus').textContent = 'Aplicado: artista, título, álbum, fecha, género, ISRC y carátula de Deezer.';
+});
 
 $('download').addEventListener('click', async () => {
   const btn = $('download');
@@ -156,7 +247,10 @@ $('download').addEventListener('click', async () => {
       artist: $('artist').value,
       title: $('title').value,
       album: $('album').value,
-      date: state.meta.uploadDate,
+      date: state.applied?.date || state.meta.uploadDate,
+      genre: state.applied?.genre,
+      isrc: state.applied?.isrc,
+      coverUrl: state.applied?.coverUrl,
     });
     const name = decodeURIComponent(res.headers.get('X-Filename') || 'audio');
     const blob = await res.blob();
