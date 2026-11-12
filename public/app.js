@@ -11,7 +11,31 @@ const el = (tag, attrs = {}, ...kids) => {
   n.append(...kids.filter((k) => k != null));
   return n;
 };
+// replaceChildren() convierte null/undefined/false en el texto "null": los descartamos (cola, ajustes, lotes...)
+const nativeReplaceChildren = Element.prototype.replaceChildren;
+Element.prototype.replaceChildren = function (...kids) {
+  return nativeReplaceChildren.apply(this, kids.filter((k) => k != null && k !== false));
+};
 const link = (text, href, cls) => el('a', { href, target: '_blank', rel: 'noopener noreferrer', class: cls || '' }, text);
+
+// ---------- configuración del servidor (incluye el "modo inteligente") ----------
+const FALLBACK_CFG = { library: false, telegram: false, concurrency: 3, settings: { target: 'flac', dest: 'browser', platform: 'deezer', autoMeta: '', subLangs: [] }, platforms: [], outputs: [] };
+let cfg = FALLBACK_CFG;
+const cfgReady = fetch('/api/config').then((r) => r.json()).then((c) => { cfg = c; }).catch(() => {});
+
+let saveTimer;
+function saveSettings(patch) {
+  Object.assign(cfg.settings, patch);
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) }).catch(() => {}), 300);
+}
+
+const getJson = async (path) => {
+  const res = await fetch(path);
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || `Error ${res.status}`);
+  return j;
+};
 
 async function api(path, body) {
   const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -37,13 +61,21 @@ $('form').addEventListener('submit', async (e) => {
   e.preventDefault();
   showError('');
   $('result').hidden = true;
+  $('batch').hidden = true;
   $('loading').hidden = false;
   $('go').disabled = true;
   try {
+    await cfgReady;
     const url = $('url').value.trim();
-    state = await (await api('/api/info', { url })).json();
+    const data = await (await api('/api/info', { url })).json();
+    if (data.kind !== 'video') {
+      state = { ...data, url };
+      renderBatch();
+      return;
+    }
+    state = data;
     state.url = url;
-    state.platform = 'deezer';
+    state.platform = cfg.settings.platform;
     state.applied = null;
     render();
     loadLinks();
@@ -77,10 +109,29 @@ function render() {
 
   const src = $('sources');
   src.replaceChildren(...formats.map((f, i) =>
-    radio('source', f.id, i === 0, `${f.codec} · ${f.abr || '?'} kbps`, [f.ext, f.asr && `${f.asr / 1000} kHz`, fmtSize(f.size), i === 0 && 'mejor'].filter(Boolean).join(' · '))));
+    radio('source', f.id, i === 0, `${f.codec} · ${f.abr || '?'} kbps`, [f.lang && `idioma: ${f.lang}`, f.ext, f.asr && `${f.asr / 1000} kHz`, fmtSize(f.size), i === 0 && 'mejor'].filter(Boolean).join(' · '))));
 
   const out = $('outputs');
-  out.replaceChildren(...outputs.map((o) => radio('target', o.id, o.id === 'flac', o.label)));
+  out.replaceChildren(...outputs.map((o) => radio('target', o.id, o.id === cfg.settings.target, o.label)));
+  if (!outputs.some((o) => o.id === cfg.settings.target)) out.querySelector('input')?.click();
+
+  // destino: dispositivo o biblioteca del servidor
+  const dest = cfg.library && cfg.settings.dest === 'library' ? 'library' : 'browser';
+  $('destOpts').replaceChildren(
+    radio('dest', 'browser', dest === 'browser', 'Mi dispositivo', 'Se baja a este navegador'),
+    ...(cfg.library ? [radio('dest', 'library', dest === 'library', 'Biblioteca del servidor', 'Queda guardada en la música del servidor')] : []));
+  $('destOpts').closest('.group').hidden = !cfg.library;
+
+  // subtítulos disponibles (SRT)
+  const sl = meta.subtitleLangs || { manual: [], auto: [] };
+  const langs = [...sl.manual.map((l) => ({ code: l, label: l })), ...sl.auto.map((l) => ({ code: l, label: `${l.replace('-orig', '')} (auto)` }))];
+  $('subsBox').hidden = !langs.length;
+  $('subsOpts').replaceChildren(...langs.map((l) => {
+    const b = el('button', { type: 'button', class: 'chip chip-btn', title: 'Descargar subtítulos .srt' }, l.label);
+    b.addEventListener('click', () => downloadSubs(l.code, b));
+    return b;
+  }));
+  $('listNote').hidden = !state.listUrl;
 
   const rows = [
     ['Canal', meta.channelUrl ? link(meta.channel, meta.channelUrl) : meta.channel],
@@ -155,7 +206,7 @@ function renderTabs() {
   $('platformTabs').replaceChildren(...state.platforms.map((p) => {
     const b = el('button', { type: 'button', class: 'tab' + (p.id === state.platform ? ' active' : ''), role: 'tab', 'aria-selected': String(p.id === state.platform) }, p.label, p.ready ? null : el('small', {}, 'pronto'));
     if (!p.ready) b.title = p.note || '';
-    b.addEventListener('click', () => { state.platform = p.id; renderTabs(); loadPlatform(); });
+    b.addEventListener('click', () => { state.platform = p.id; saveSettings({ platform: p.id }); renderTabs(); loadPlatform(); });
     return b;
   }));
 }
@@ -274,38 +325,155 @@ function renderPick(r, p) {
   }
 }
 
+async function downloadSubs(lang, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const res = await api('/api/subtitles', { url: state.url, lang, title: state.meta.title });
+    const name = decodeURIComponent(res.headers.get('X-Filename') || 'subtitulos.srt');
+    saveBlob(await res.blob(), name);
+  } catch (err) {
+    showError(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+function saveBlob(blob, name) {
+  const a = el('a', { href: '#', download: name });
+  a.href = URL.createObjectURL(blob);
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+}
+
 $('download').addEventListener('click', async () => {
   const btn = $('download');
   const status = $('dlStatus');
   btn.disabled = true;
-  status.textContent = 'Convirtiendo…';
+  status.textContent = 'Agregando a la cola…';
   showError('');
   try {
-    const res = await api('/api/download', {
-      url: state.url,
-      source: document.querySelector('input[name=source]:checked')?.value,
-      target: document.querySelector('input[name=target]:checked')?.value,
-      artist: $('artist').value,
-      title: $('title').value,
-      album: $('album').value,
-      date: state.applied?.date || state.meta.uploadDate,
-      genre: state.applied?.genre,
-      isrc: state.applied?.isrc,
-      coverUrl: state.applied?.coverUrl,
-    });
-    const name = decodeURIComponent(res.headers.get('X-Filename') || 'audio');
-    const blob = await res.blob();
-    const a = el('a', { href: '#', download: name });
-    a.href = URL.createObjectURL(blob);
-    document.body.append(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
-    status.textContent = `Listo: ${name} (${(blob.size / 1048576).toFixed(1)} MB)`;
+    const dest = document.querySelector('input[name=dest]:checked')?.value || 'browser';
+    const { jobs } = await (await api('/api/jobs', {
+      items: [{
+        url: state.url,
+        source: document.querySelector('input[name=source]:checked')?.value,
+        target: document.querySelector('input[name=target]:checked')?.value,
+        dest,
+        artist: $('artist').value,
+        title: $('title').value,
+        album: $('album').value,
+        date: state.applied?.date || state.meta.uploadDate,
+        genre: state.applied?.genre,
+        isrc: state.applied?.isrc,
+        coverUrl: state.applied?.coverUrl,
+        subLangs: cfg.settings.subLangs,
+      }],
+    })).json();
+    status.textContent = dest === 'library' ? 'En la cola: se guardará en la biblioteca.' : 'En la cola: se descargará al terminar.';
+    window.afterEnqueue?.(jobs, dest === 'browser');
   } catch (err) {
     status.textContent = '';
     showError(err.message);
   } finally {
     btn.disabled = false;
   }
+});
+
+// Modo inteligente: recordar lo último que elegiste.
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (t.name === 'target') saveSettings({ target: t.value });
+  else if (t.name === 'dest') saveSettings({ dest: t.value });
+});
+
+$('listLoad').addEventListener('click', () => {
+  if (!state?.listUrl) return;
+  $('url').value = state.listUrl;
+  $('form').requestSubmit();
+});
+
+// ---------- lote: playlist o canal ----------
+function fmtDurShort(s) { return s ? `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}` : ''; }
+
+function updateBatchCount() {
+  const boxes = [...document.querySelectorAll('#batchList input[type=checkbox]')];
+  const n = boxes.filter((b) => b.checked).length;
+  $('batchCount').textContent = `${n} de ${boxes.length} marcadas`;
+  $('batchGo').disabled = n === 0;
+  $('batchGo').textContent = n ? `Añadir ${n} a la cola` : 'Añadir a la cola';
+}
+
+function renderBatch() {
+  $('batchTitle').textContent = `${state.kind === 'channel' ? 'Canal' : 'Playlist'}: ${state.title || state.url}`;
+  $('batchList').replaceChildren(...state.entries.map((e, i) => {
+    const cb = el('input', { type: 'checkbox', value: String(i), 'aria-label': `Incluir ${e.title}` });
+    cb.checked = true;
+    cb.addEventListener('change', updateBatchCount);
+    return el('li', {}, el('label', { class: 'batch-row' }, cb,
+      el('span', { class: 'batch-n' }, String(i + 1).padStart(2, '0')),
+      el('span', { class: 'batch-main' }, el('b', {}, e.title), el('small', {}, e.channel || '')),
+      el('span', { class: 'batch-dur' }, fmtDurShort(e.duration))));
+  }));
+
+  const dest = cfg.library && cfg.settings.dest === 'library' ? 'library' : 'browser';
+  $('bTargets').replaceChildren(...cfg.outputs.map((o) => radio('bTarget', o.id, o.id === cfg.settings.target, o.label)));
+  $('bDest').replaceChildren(
+    radio('bDest', 'browser', dest === 'browser', 'Mi dispositivo', 'Cada pista se baja al terminar'),
+    ...(cfg.library ? [radio('bDest', 'library', dest === 'library', 'Biblioteca del servidor', 'Se guardan en la música del servidor')] : []));
+  $('bMeta').replaceChildren(
+    radio('bMeta', '', !cfg.settings.autoMeta, 'Nada', 'Solo lo deducido del título'),
+    ...cfg.platforms.filter((p) => p.ready).map((p) => radio('bMeta', p.id, cfg.settings.autoMeta === p.id, p.label)));
+  $('batchStatus').textContent = '';
+  $('batch').hidden = false;
+  updateBatchCount();
+}
+
+$('batchAll').addEventListener('click', () => { document.querySelectorAll('#batchList input').forEach((b) => (b.checked = true)); updateBatchCount(); });
+$('batchNone').addEventListener('click', () => { document.querySelectorAll('#batchList input').forEach((b) => (b.checked = false)); updateBatchCount(); });
+
+$('batchGo').addEventListener('click', async () => {
+  const picked = [...document.querySelectorAll('#batchList input:checked')].map((b) => state.entries[Number(b.value)]);
+  if (!picked.length) return;
+  const target = document.querySelector('input[name=bTarget]:checked')?.value;
+  const dest = document.querySelector('input[name=bDest]:checked')?.value || 'browser';
+  const autoMeta = document.querySelector('input[name=bMeta]:checked')?.value || '';
+  saveSettings({ target, dest, autoMeta });
+  $('batchGo').disabled = true;
+  $('batchStatus').textContent = 'Agregando…';
+  showError('');
+  try {
+    const { jobs } = await (await api('/api/jobs', {
+      items: picked.map((e) => ({ url: e.url, label: e.title, target, dest, autoMeta: autoMeta || null, subLangs: cfg.settings.subLangs })),
+    })).json();
+    $('batchStatus').textContent = `Añadidas ${jobs.length} a la cola.`;
+    window.afterEnqueue?.(jobs, dest === 'browser');
+  } catch (err) {
+    $('batchStatus').textContent = '';
+    showError(err.message);
+  } finally {
+    updateBatchCount();
+  }
+});
+
+// ---------- secciones plegables (abiertas las marcadas con data-open; el resto minimizadas) ----------
+document.querySelectorAll('.sheet').forEach((sheet, i) => {
+  const head = sheet.querySelector('.sheet-head');
+  const body = sheet.querySelector('.sheet-body');
+  body.id = body.id || `sheet-body-${i + 1}`;
+  const txt = el('span', { class: 'toggle-txt' });
+  const btn = el('button', { type: 'button', class: 'toggle', 'aria-controls': body.id }, el('span', { class: 'toggle-ico', 'aria-hidden': 'true' }), txt);
+  head.append(btn);
+  const set = (open) => {
+    sheet.classList.toggle('collapsed', !open);
+    btn.setAttribute('aria-expanded', String(open));
+    txt.textContent = open ? 'Minimizar' : 'Expandir';
+  };
+  set(sheet.hasAttribute('data-open'));
+  btn.addEventListener('click', (e) => { e.stopPropagation(); set(sheet.classList.contains('collapsed')); });
+  head.addEventListener('click', (e) => { if (!e.target.closest('button')) btn.click(); });
 });

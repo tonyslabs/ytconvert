@@ -7,6 +7,14 @@ services:
     environment:
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}      # van en ~/docker/apps/ytconvert/.env (no en el repo)
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      LIBRARY_DIR: /music                            # biblioteca de Navidrome (carpeta plana "Artista - Título.ext")
+      CONCURRENCY: "3"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}    # opcional: descargas remotas por Telegram
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - /data/apps/ytconvert:/data                   # historial, suscripciones, ajustes y buzón de salida
+      - /data/shared/music:/music                    # escribible: la carpeta es de www-data (gid 33)
+    group_add: ["33"]
     ports:
       - "100.76.255.29:8094:3100"   # acceso por tailnet para probar (hl:8094)
     networks: [core]                # misma red que cloudflared -> el túnel apunta a http://ytconvert:3100

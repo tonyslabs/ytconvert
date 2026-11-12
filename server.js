@@ -1,20 +1,31 @@
 import http from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat, rm, mkdir } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
-import { join, dirname, normalize } from 'node:path';
+import { join, dirname, normalize, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isYouTubeUrl, parseTrack, extractLinks } from './lib/parse.js';
-import { getInfo, audioFormats, normalizeInfo, fetchSource, convert, makeTempDir, removeDir, TARGETS } from './lib/ytdlp.js';
+import { parseTrack, extractLinks, classifyUrl, safeFilename } from './lib/parse.js';
+import { getInfo, audioFormats, normalizeInfo, listEntries, fetchSubs, makeTempDir, removeDir, TARGETS } from './lib/ytdlp.js';
 import { findEverywhere } from './lib/links.js';
 import { listProviders, getProvider } from './lib/providers/index.js';
-import { writeFile } from 'node:fs/promises';
+import { isCoverUrl } from './lib/cover.js';
+import { createStore } from './lib/store.js';
+import { Jobs } from './lib/jobs.js';
+import { createRunner, cleanOutbox } from './lib/pipeline.js';
+import { Subs } from './lib/subs.js';
+import { createTelegram } from './lib/telegram.js';
 
+const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3100;
 const HOST = process.env.HOST || '127.0.0.1';
-const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), 'public');
-const MAX_JOBS = 2;
-let jobs = 0;
+const PUBLIC = join(ROOT, 'public');
+const DATA_DIR = resolve(process.env.DATA_DIR || join(ROOT, 'data'));
+const LIBRARY_DIR = process.env.LIBRARY_DIR ? resolve(process.env.LIBRARY_DIR) : null;
+const LIBRARY_LAYOUT = process.env.LIBRARY_LAYOUT === 'tree' ? 'tree' : 'flat';
+const CONCURRENCY = Math.max(1, Number(process.env.CONCURRENCY) || 3);
+const OUTBOX_HOURS = Number(process.env.OUTBOX_HOURS) || 24;
+const SUB_CHECK_MINUTES = Math.max(5, Number(process.env.SUB_CHECK_MINUTES) || 60);
+const MAX_PENDING = 500;
+const OUTBOX = join(DATA_DIR, 'outbox');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -23,8 +34,13 @@ const MIME = {
   '.svg': 'image/svg+xml',
 };
 
-const send = (res, code, body) => {
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
+class HttpError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+const bad = (msg, status = 400) => { throw new HttpError(status, msg); };
+
+const send = (res, code, body, headers = {}) => {
+  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', ...headers });
   res.end(JSON.stringify(body));
 };
 
@@ -32,9 +48,9 @@ async function readBody(req) {
   let data = '';
   for await (const chunk of req) {
     data += chunk;
-    if (data.length > 100_000) throw new Error('Body demasiado grande');
+    if (data.length > 500_000) throw new HttpError(413, 'Body demasiado grande');
   }
-  return data ? JSON.parse(data) : {};
+  try { return data ? JSON.parse(data) : {}; } catch { throw new HttpError(400, 'JSON inválido'); }
 }
 
 const OUTPUT_LABELS = {
@@ -46,19 +62,80 @@ const OUTPUT_LABELS = {
   'm4a-256': 'M4A (AAC 256 kbps)',
   opus: 'Opus 192 kbps',
 };
+const outputs = () => Object.keys(TARGETS).map((id) => ({ id, label: OUTPUT_LABELS[id] }));
+
+// ---------- ajustes (modo inteligente, compartido entre dispositivos) ----------
+const store = createStore(DATA_DIR);
+const DEFAULT_SETTINGS = { target: 'flac', dest: 'browser', platform: 'deezer', autoMeta: '', subLangs: [] };
+let settings = { ...DEFAULT_SETTINGS };
+
+const LANG_RE = /^[\w.*-]{2,20}$/;
+function cleanSettings(input = {}, base = settings) {
+  const s = { ...base };
+  if (input.target !== undefined) { if (!TARGETS[input.target]) bad('Formato inválido.'); s.target = input.target; }
+  if (input.dest !== undefined) {
+    if (!['browser', 'library'].includes(input.dest)) bad('Destino inválido.');
+    if (input.dest === 'library' && !LIBRARY_DIR) bad('La biblioteca no está configurada en el servidor.');
+    s.dest = input.dest;
+  }
+  if (input.platform !== undefined) { if (!getProvider(input.platform)) bad('Plataforma inválida.'); s.platform = input.platform; }
+  if (input.autoMeta !== undefined) {
+    if (input.autoMeta && !getProvider(input.autoMeta)) bad('Plataforma inválida.');
+    s.autoMeta = input.autoMeta || '';
+  }
+  if (input.subLangs !== undefined) {
+    if (!Array.isArray(input.subLangs) || input.subLangs.length > 5 || !input.subLangs.every((l) => LANG_RE.test(l))) bad('Idiomas de subtítulos inválidos.');
+    s.subLangs = input.subLangs;
+  }
+  return s;
+}
+
+// ---------- cola, suscripciones, telegram ----------
+const jobs = new Jobs({
+  run: createRunner({ libraryDir: LIBRARY_DIR, layout: LIBRARY_LAYOUT, outboxDir: OUTBOX }),
+  store,
+  concurrency: CONCURRENCY,
+  onPrune: (job) => { if (job.dest === 'browser') rm(join(OUTBOX, job.id), { recursive: true, force: true }).catch(() => {}); },
+});
+const subs = new Subs({ store, jobs, list: listEntries, getSettings: async () => settings, intervalMs: SUB_CHECK_MINUTES * 60_000 });
+
+// ---------- handlers ----------
+async function handleConfig(req, res) {
+  send(res, 200, {
+    library: !!LIBRARY_DIR,
+    layout: LIBRARY_LAYOUT,
+    telegram: !!process.env.TELEGRAM_BOT_TOKEN,
+    concurrency: CONCURRENCY,
+    outboxHours: OUTBOX_HOURS,
+    subCheckMinutes: SUB_CHECK_MINUTES,
+    settings,
+    platforms: listProviders(),
+    outputs: outputs(),
+  });
+}
 
 async function handleInfo(req, res) {
   const { url } = await readBody(req);
-  if (!isYouTubeUrl(url)) return send(res, 400, { error: 'Pegá un link válido de YouTube.' });
-  const raw = await getInfo(url);
+  const c = classifyUrl(url);
+  if (!c) bad('Pegá un link válido de YouTube.');
+
+  if (c.kind !== 'video') {
+    const list = await listEntries(c.url, 200);
+    if (!list.entries.length) bad('No encontré videos en esa lista o canal.', 422);
+    return send(res, 200, { kind: c.kind, listUrl: c.url, ...list });
+  }
+
+  const raw = await getInfo(c.url);
   const meta = normalizeInfo(raw);
   const formats = audioFormats(raw);
-  if (!formats.length) return send(res, 422, { error: 'El video no tiene pistas de audio disponibles.' });
+  if (!formats.length) bad('El video no tiene pistas de audio disponibles.', 422);
   send(res, 200, {
+    kind: 'video',
+    listUrl: c.listId ? `https://www.youtube.com/playlist?list=${c.listId}` : null,
     meta,
     guess: parseTrack(raw),
     formats,
-    outputs: Object.keys(TARGETS).map((id) => ({ id, label: OUTPUT_LABELS[id] })),
+    outputs: outputs(),
     descriptionLinks: extractLinks(meta.description),
     platforms: listProviders(),
   });
@@ -66,79 +143,148 @@ async function handleInfo(req, res) {
 
 async function handleLinks(req, res) {
   const { artist = '', title = '', url } = await readBody(req);
-  if (!title.trim() && !artist.trim()) return send(res, 400, { error: 'Falta artista o título.' });
+  if (!title.trim() && !artist.trim()) bad('Falta artista o título.');
   send(res, 200, await findEverywhere({ artist: artist.trim(), title: title.trim(), ytUrl: url }));
 }
 
 async function handlePlatform(req, res) {
   const { platform, artist = '', title = '' } = await readBody(req);
   const p = getProvider(platform);
-  if (!p) return send(res, 400, { error: 'Plataforma desconocida.' });
-  if (!p.ready) return send(res, 501, { error: p.note || 'Esta plataforma aún no está disponible.' });
-  if (!title.trim() && !artist.trim()) return send(res, 400, { error: 'Falta artista o título.' });
+  if (!p) bad('Plataforma desconocida.');
+  if (!p.ready) bad(p.note || 'Esta plataforma aún no está disponible.', 501);
+  if (!title.trim() && !artist.trim()) bad('Falta artista o título.');
   send(res, 200, await p.lookup({ artist: artist.trim(), title: title.trim() }));
 }
 
-// Solo se aceptan carátulas de las CDN de Deezer, Spotify y YouTube Music (evita SSRF hacia otros hosts).
-async function fetchCover(url, dir) {
-  let u;
-  try { u = new URL(url); } catch { return null; }
-  if (u.protocol !== 'https:' || !/(^|\.)(dzcdn\.net|scdn\.co|googleusercontent\.com)$/i.test(u.hostname)) return null;
-  const r = await fetch(u, { signal: AbortSignal.timeout(15000) });
-  if (!r.ok || !/^image\//.test(r.headers.get('content-type') || '')) return null;
-  const buf = Buffer.from(await r.arrayBuffer());
-  if (buf.length > 10_000_000) return null;
-  const file = join(dir, 'cover-platform.jpg');
-  await writeFile(file, buf);
-  return file;
+const str = (v, max = 300) => (v === undefined || v === null ? undefined : String(v).slice(0, max));
+
+function cleanSpec(raw) {
+  const c = classifyUrl(raw?.url);
+  if (!c || c.kind !== 'video') bad('Link inválido en la lista.');
+  if (!TARGETS[raw.target]) bad('Formato de salida inválido.');
+  const dest = raw.dest === 'library' ? 'library' : 'browser';
+  if (dest === 'library' && !LIBRARY_DIR) bad('La biblioteca no está configurada en el servidor.');
+  if (raw.source && !/^[\w.-]+$/.test(raw.source)) bad('Pista de origen inválida.');
+  if (raw.autoMeta && !getProvider(raw.autoMeta)) bad('Plataforma inválida.');
+  const subLangs = Array.isArray(raw.subLangs) ? raw.subLangs.filter((l) => LANG_RE.test(l)).slice(0, 5) : [];
+  return {
+    url: c.url,
+    target: raw.target,
+    dest,
+    source: raw.source || undefined,
+    artist: str(raw.artist),
+    title: str(raw.title),
+    label: str(raw.label),
+    album: str(raw.album),
+    date: str(raw.date, 20),
+    genre: str(raw.genre, 80),
+    isrc: str(raw.isrc, 20),
+    coverUrl: raw.coverUrl && isCoverUrl(raw.coverUrl) ? raw.coverUrl : undefined,
+    autoMeta: raw.autoMeta || null,
+    subLangs: dest === 'library' ? subLangs : [],
+  };
 }
 
-async function handleDownload(req, res) {
-  const b = await readBody(req);
-  if (!isYouTubeUrl(b.url)) return send(res, 400, { error: 'Link inválido.' });
-  if (!TARGETS[b.target]) return send(res, 400, { error: 'Formato de salida inválido.' });
-  if (b.source && !/^[\w.-]+$/.test(b.source)) return send(res, 400, { error: 'Pista de origen inválida.' });
-  if (jobs >= MAX_JOBS) return send(res, 429, { error: 'Hay demasiadas conversiones en curso, probá en unos segundos.' });
+async function handleJobsAdd(req, res) {
+  const { items } = await readBody(req);
+  if (!Array.isArray(items) || !items.length) bad('No hay nada para agregar.');
+  if (items.length > 200) bad('Máximo 200 por tanda.');
+  const pending = jobs.list().filter((j) => ['queued', 'running'].includes(j.status)).length;
+  if (pending + items.length > MAX_PENDING) bad('La cola está llena.', 429);
+  const specs = items.map(cleanSpec); // valida todo antes de encolar nada
+  send(res, 200, { jobs: specs.map((s) => jobs.add(s, 'ui')) });
+}
 
-  jobs++;
+async function handleJobsList(req, res) {
+  send(res, 200, { jobs: jobs.list().slice(0, 150) });
+}
+
+async function handleJobsCancel(req, res) {
+  const { id } = await readBody(req);
+  send(res, 200, { ok: jobs.cancel(id) });
+}
+
+async function handleJobsRemove(req, res) {
+  const { id } = await readBody(req);
+  send(res, 200, { ok: await jobs.remove(id) });
+}
+
+async function handleJobsClear(req, res) {
+  await jobs.clearFinished();
+  send(res, 200, { ok: true });
+}
+
+async function handleJobFile(req, res) {
+  const id = new URL(req.url, 'http://x').searchParams.get('id');
+  const job = jobs.get(id);
+  if (!job || job.status !== 'done' || job.dest !== 'browser' || !job.file) bad('Ese archivo no está disponible.', 404);
+  let size;
+  try { size = (await stat(job.file)).size; } catch { bad('El archivo ya expiró del servidor.', 410); }
+  res.writeHead(200, {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': size,
+    'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(job.name)}`,
+  });
+  await new Promise((resolveP, reject) => {
+    const s = createReadStream(job.file);
+    s.on('error', reject);
+    res.on('close', resolveP);
+    s.pipe(res);
+  });
+}
+
+async function handleHistoryExport(req, res) {
+  const rows = jobs.list().filter((j) => !['queued', 'running'].includes(j.status)).map((j) => ({
+    url: j.url, artist: j.artist, title: j.title, target: j.target, dest: j.dest, status: j.status, name: j.name || null, size: j.size || null,
+    finishedAt: j.finishedAt ? new Date(j.finishedAt).toISOString() : null, error: j.error || null,
+  }));
+  send(res, 200, rows, { 'Content-Disposition': 'attachment; filename="drstify-historial.json"' });
+}
+
+async function handleSettingsGet(req, res) { send(res, 200, settings); }
+async function handleSettingsSet(req, res) {
+  settings = cleanSettings(await readBody(req));
+  await store.save('settings', settings);
+  send(res, 200, settings);
+}
+
+function needLibrary() { if (!LIBRARY_DIR) bad('Las suscripciones necesitan la biblioteca del servidor (LIBRARY_DIR).'); }
+async function handleSubsList(req, res) { send(res, 200, { enabled: !!LIBRARY_DIR, items: subs.view() }); }
+async function handleSubsAdd(req, res) {
+  needLibrary();
+  const { url } = await readBody(req);
+  const c = classifyUrl(url);
+  if (!c || c.kind === 'video') bad('Pegá el link de una playlist o de un canal.');
+  const item = await subs.add(c.url, c.kind);
+  send(res, 200, { id: item.id });
+}
+async function handleSubsRemove(req, res) { send(res, 200, { ok: await subs.remove((await readBody(req)).id) }); }
+async function handleSubsToggle(req, res) { const b = await readBody(req); send(res, 200, { ok: await subs.setEnabled(b.id, b.enabled) }); }
+async function handleSubsCheck(req, res) {
+  const { id } = await readBody(req);
+  const targets = id ? subs.items.filter((s) => s.id === id) : subs.items.filter((s) => s.enabled);
+  for (const s of targets) await subs.check(s);
+  send(res, 200, { checked: targets.length, items: subs.view() });
+}
+
+async function handleSubtitles(req, res) {
+  const { url, lang, title = '' } = await readBody(req);
+  const c = classifyUrl(url);
+  if (!c || c.kind !== 'video') bad('Link inválido.');
+  if (!LANG_RE.test(lang || '')) bad('Idioma inválido.');
   const dir = await makeTempDir();
   try {
-    const fetched = await fetchSource(b.url, b.source, dir);
-    const { audio } = fetched;
-    const cover = (b.coverUrl && (await fetchCover(b.coverUrl, dir).catch(() => null))) || fetched.cover;
-    const year = /^\d{8}$/.test(b.date || '') ? b.date.slice(0, 4) : /^\d{4}(-\d{2}-\d{2})?$/.test(b.date || '') ? b.date : '';
-    const out = await convert({
-      audio,
-      cover,
-      dir,
-      target: b.target,
-      tags: {
-        artist: b.artist,
-        album_artist: b.artist,
-        title: b.title,
-        album: b.album,
-        date: year,
-        genre: b.genre,
-        isrc: b.isrc,
-        comment: `Fuente: ${b.url}`,
-      },
-    });
-    const { size } = await stat(out.file);
+    const files = await fetchSubs(c.url, [lang], dir);
+    if (!files.length) bad('No hay subtítulos en ese idioma.', 404);
+    const text = await readFile(files[0].file, 'utf8');
+    const name = `${safeFilename(title || 'subtitulos')}.${files[0].lang}.srt`;
     res.writeHead(200, {
-      'Content-Type': out.mime,
-      'Content-Length': size,
-      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(out.name)}`,
-      'X-Filename': encodeURIComponent(out.name),
+      'Content-Type': 'application/x-subrip; charset=utf-8',
+      'X-Filename': encodeURIComponent(name),
       'Access-Control-Expose-Headers': 'X-Filename',
     });
-    await new Promise((resolve, reject) => {
-      const s = createReadStream(out.file);
-      s.on('error', reject);
-      res.on('close', resolve);
-      s.pipe(res);
-    });
+    res.end(text);
   } finally {
-    jobs--;
     await removeDir(dir);
   }
 }
@@ -151,7 +297,7 @@ async function serveStatic(req, res) {
   try {
     const data = await readFile(file);
     const ext = file.slice(file.lastIndexOf('.'));
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
     res.end(data);
   } catch {
     send(res, 404, { error: 'No encontrado' });
@@ -159,10 +305,25 @@ async function serveStatic(req, res) {
 }
 
 const routes = {
+  'GET /api/config': handleConfig,
   'POST /api/info': handleInfo,
   'POST /api/links': handleLinks,
   'POST /api/platform': handlePlatform,
-  'POST /api/download': handleDownload,
+  'POST /api/jobs': handleJobsAdd,
+  'GET /api/jobs': handleJobsList,
+  'POST /api/jobs/cancel': handleJobsCancel,
+  'POST /api/jobs/remove': handleJobsRemove,
+  'POST /api/jobs/clear': handleJobsClear,
+  'GET /api/jobs/file': handleJobFile,
+  'GET /api/history/export': handleHistoryExport,
+  'GET /api/settings': handleSettingsGet,
+  'POST /api/settings': handleSettingsSet,
+  'GET /api/subs': handleSubsList,
+  'POST /api/subs': handleSubsAdd,
+  'POST /api/subs/remove': handleSubsRemove,
+  'POST /api/subs/toggle': handleSubsToggle,
+  'POST /api/subs/check': handleSubsCheck,
+  'POST /api/subtitles': handleSubtitles,
 };
 
 const server = http.createServer(async (req, res) => {
@@ -172,10 +333,25 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET') return await serveStatic(req, res);
     send(res, 405, { error: 'Método no permitido' });
   } catch (e) {
-    console.error(e);
-    if (!res.headersSent) send(res, 500, { error: e.message || 'Error interno' });
+    if (!(e instanceof HttpError)) console.error(e);
+    if (!res.headersSent) send(res, e.status || 500, { error: e.message || 'Error interno' });
     else res.destroy();
   }
 });
 
-server.listen(PORT, HOST, () => console.log(`ytconvert en http://${HOST}:${PORT}`));
+async function boot() {
+  await mkdir(OUTBOX, { recursive: true });
+  if (LIBRARY_DIR) await mkdir(LIBRARY_DIR, { recursive: true }).catch((e) => console.error(`LIBRARY_DIR no escribible: ${e.message}`));
+  try { settings = cleanSettings(await store.load('settings', {}), DEFAULT_SETTINGS); } catch { settings = { ...DEFAULT_SETTINGS }; }
+  await jobs.init();
+  await subs.init();
+  cleanOutbox(OUTBOX, OUTBOX_HOURS);
+  setInterval(() => cleanOutbox(OUTBOX, OUTBOX_HOURS), 3600_000).unref();
+  if (process.env.TELEGRAM_BOT_TOKEN) {
+    createTelegram({ token: process.env.TELEGRAM_BOT_TOKEN, chatId: process.env.TELEGRAM_CHAT_ID, jobs, list: listEntries, getSettings: async () => settings }).start();
+  }
+  server.listen(PORT, HOST, () => console.log(`ytconvert en http://${HOST}:${PORT}${LIBRARY_DIR ? ` · biblioteca: ${LIBRARY_DIR}` : ''}`));
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) boot();
+export { server, boot, jobs, subs, cleanSettings };
