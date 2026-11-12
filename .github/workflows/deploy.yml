@@ -41,6 +41,8 @@ jobs:
 
   deploy-homelab:
     needs: build-and-push
+    # Solo el repo original y solo desde main: un fork nunca debe llegar al runner del homelab
+    if: github.repository == 'tonyslabs/ytconvert' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, homelab, ytconvert]
     steps:
       - name: Actualizar contenedor en el homelab

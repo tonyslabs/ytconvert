@@ -9,6 +9,8 @@ services:
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
       LIBRARY_DIR: /music                            # biblioteca de Navidrome (carpeta plana "Artista - Título.ext")
       CONCURRENCY: "3"
+      DEMO_MODE: "1"                                # instancia pública de demostración: límites y sin funciones de dueño
+      TRUST_PROXY: "1"                              # IP real del visitante vía Cloudflare (CF-Connecting-IP)
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}    # opcional: descargas remotas por Telegram
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     volumes:
