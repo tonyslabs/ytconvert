@@ -16,7 +16,7 @@ services:
       - /data/shared/music:/music                    # escribible: la carpeta es de www-data (gid 33)
     group_add: ["33"]
     ports:
-      - "100.76.255.29:8094:3100"   # acceso por tailnet para probar (hl:8094)
+      - "${BIND_ADDR:-127.0.0.1}:8094:3100"   # BIND_ADDR en .env = IP de tu tailnet/LAN; por defecto solo local
     networks: [core]                # misma red que cloudflared -> el túnel apunta a http://ytconvert:3100
 
 networks:

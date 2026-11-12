@@ -13,18 +13,33 @@ import { Jobs } from './lib/jobs.js';
 import { createRunner, cleanOutbox } from './lib/pipeline.js';
 import { Subs } from './lib/subs.js';
 import { createTelegram } from './lib/telegram.js';
+import { clientIp, createAuth, createRateLimiter, demoConfig } from './lib/guard.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3100;
 const HOST = process.env.HOST || '127.0.0.1';
 const PUBLIC = join(ROOT, 'public');
 const DATA_DIR = resolve(process.env.DATA_DIR || join(ROOT, 'data'));
-const LIBRARY_DIR = process.env.LIBRARY_DIR ? resolve(process.env.LIBRARY_DIR) : null;
+const DEMO = demoConfig();
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
+const auth = createAuth({ password: process.env.AUTH_PASSWORD, trustProxy: TRUST_PROXY });
+// En modo demo no hay biblioteca, suscripciones ni Telegram: son funciones del dueño.
+const LIBRARY_DIR = !DEMO.on && process.env.LIBRARY_DIR ? resolve(process.env.LIBRARY_DIR) : null;
 const LIBRARY_LAYOUT = process.env.LIBRARY_LAYOUT === 'tree' ? 'tree' : 'flat';
 const CONCURRENCY = Math.max(1, Number(process.env.CONCURRENCY) || 3);
 const OUTBOX_HOURS = Number(process.env.OUTBOX_HOURS) || 24;
 const SUB_CHECK_MINUTES = Math.max(5, Number(process.env.SUB_CHECK_MINUTES) || 60);
-const MAX_PENDING = 500;
+const MAX_PENDING = DEMO.on ? DEMO.maxPending : 500;
+const jobLimit = createRateLimiter({ limit: DEMO.jobsPerHour, windowMs: 3600_000 });
+const infoLimit = createRateLimiter({ limit: DEMO.infoPerHour, windowMs: 3600_000 });
+
+// Límite por IP solo en modo demo.
+function limit(limiter, req, n = 1) {
+  if (!DEMO.on) return;
+  const r = limiter.take(clientIp(req, TRUST_PROXY), n);
+  if (!r.ok) throw new HttpError(429, `Límite de la demo alcanzado. Probá de nuevo en ${Math.ceil(r.retryAfter / 60)} min o instalá tu propia copia.`);
+}
+const demoOff = () => { if (DEMO.on) bad('No disponible en la demo. Instalá tu propia copia con Docker.', 403); };
 const OUTBOX = join(DATA_DIR, 'outbox');
 
 const MIME = {
@@ -92,7 +107,7 @@ function cleanSettings(input = {}, base = settings) {
 
 // ---------- cola, suscripciones, telegram ----------
 const jobs = new Jobs({
-  run: createRunner({ libraryDir: LIBRARY_DIR, layout: LIBRARY_LAYOUT, outboxDir: OUTBOX }),
+  run: createRunner({ libraryDir: LIBRARY_DIR, layout: LIBRARY_LAYOUT, outboxDir: OUTBOX, maxSeconds: DEMO.on ? DEMO.maxMinutes * 60 : 0 }),
   store,
   concurrency: CONCURRENCY,
   onPrune: (job) => { if (job.dest === 'browser') rm(join(OUTBOX, job.id), { recursive: true, force: true }).catch(() => {}); },
@@ -104,7 +119,8 @@ async function handleConfig(req, res) {
   send(res, 200, {
     library: !!LIBRARY_DIR,
     layout: LIBRARY_LAYOUT,
-    telegram: !!process.env.TELEGRAM_BOT_TOKEN,
+    telegram: !DEMO.on && !!process.env.TELEGRAM_BOT_TOKEN,
+    demo: DEMO.on ? { maxMinutes: DEMO.maxMinutes, maxList: DEMO.maxList } : false,
     concurrency: CONCURRENCY,
     outboxHours: OUTBOX_HOURS,
     subCheckMinutes: SUB_CHECK_MINUTES,
@@ -118,9 +134,10 @@ async function handleInfo(req, res) {
   const { url } = await readBody(req);
   const c = classifyUrl(url);
   if (!c) bad('Pegá un link válido de YouTube.');
+  limit(infoLimit, req);
 
   if (c.kind !== 'video') {
-    const list = await listEntries(c.url, 200);
+    const list = await listEntries(c.url, DEMO.on ? DEMO.maxList : 200);
     if (!list.entries.length) bad('No encontré videos en esa lista o canal.', 422);
     return send(res, 200, { kind: c.kind, listUrl: c.url, ...list });
   }
@@ -129,6 +146,7 @@ async function handleInfo(req, res) {
   const meta = normalizeInfo(raw);
   const formats = audioFormats(raw);
   if (!formats.length) bad('El video no tiene pistas de audio disponibles.', 422);
+  if (DEMO.on && raw.duration > DEMO.maxMinutes * 60) bad(`En la demo el máximo es de ${DEMO.maxMinutes} min por video.`, 422);
   send(res, 200, {
     kind: 'video',
     listUrl: c.listId ? `https://www.youtube.com/playlist?list=${c.listId}` : null,
@@ -192,6 +210,7 @@ async function handleJobsAdd(req, res) {
   const pending = jobs.list().filter((j) => ['queued', 'running'].includes(j.status)).length;
   if (pending + items.length > MAX_PENDING) bad('La cola está llena.', 429);
   const specs = items.map(cleanSpec); // valida todo antes de encolar nada
+  limit(jobLimit, req, specs.length);
   send(res, 200, { jobs: specs.map((s) => jobs.add(s, 'ui')) });
 }
 
@@ -205,11 +224,13 @@ async function handleJobsCancel(req, res) {
 }
 
 async function handleJobsRemove(req, res) {
+  demoOff();
   const { id } = await readBody(req);
   send(res, 200, { ok: await jobs.remove(id) });
 }
 
 async function handleJobsClear(req, res) {
+  demoOff();
   await jobs.clearFinished();
   send(res, 200, { ok: true });
 }
@@ -234,6 +255,7 @@ async function handleJobFile(req, res) {
 }
 
 async function handleHistoryExport(req, res) {
+  demoOff();
   const rows = jobs.list().filter((j) => !['queued', 'running'].includes(j.status)).map((j) => ({
     url: j.url, artist: j.artist, title: j.title, target: j.target, dest: j.dest, status: j.status, name: j.name || null, size: j.size || null,
     finishedAt: j.finishedAt ? new Date(j.finishedAt).toISOString() : null, error: j.error || null,
@@ -243,12 +265,13 @@ async function handleHistoryExport(req, res) {
 
 async function handleSettingsGet(req, res) { send(res, 200, settings); }
 async function handleSettingsSet(req, res) {
+  demoOff();
   settings = cleanSettings(await readBody(req));
   await store.save('settings', settings);
   send(res, 200, settings);
 }
 
-function needLibrary() { if (!LIBRARY_DIR) bad('Las suscripciones necesitan la biblioteca del servidor (LIBRARY_DIR).'); }
+function needLibrary() { demoOff(); if (!LIBRARY_DIR) bad('Las suscripciones necesitan la biblioteca del servidor (LIBRARY_DIR).'); }
 async function handleSubsList(req, res) { send(res, 200, { enabled: !!LIBRARY_DIR, items: subs.view() }); }
 async function handleSubsAdd(req, res) {
   needLibrary();
@@ -258,9 +281,10 @@ async function handleSubsAdd(req, res) {
   const item = await subs.add(c.url, c.kind);
   send(res, 200, { id: item.id });
 }
-async function handleSubsRemove(req, res) { send(res, 200, { ok: await subs.remove((await readBody(req)).id) }); }
-async function handleSubsToggle(req, res) { const b = await readBody(req); send(res, 200, { ok: await subs.setEnabled(b.id, b.enabled) }); }
+async function handleSubsRemove(req, res) { demoOff(); send(res, 200, { ok: await subs.remove((await readBody(req)).id) }); }
+async function handleSubsToggle(req, res) { demoOff(); const b = await readBody(req); send(res, 200, { ok: await subs.setEnabled(b.id, b.enabled) }); }
 async function handleSubsCheck(req, res) {
+  demoOff();
   const { id } = await readBody(req);
   const targets = id ? subs.items.filter((s) => s.id === id) : subs.items.filter((s) => s.enabled);
   for (const s of targets) await subs.check(s);
@@ -272,6 +296,7 @@ async function handleSubtitles(req, res) {
   const c = classifyUrl(url);
   if (!c || c.kind !== 'video') bad('Link inválido.');
   if (!LANG_RE.test(lang || '')) bad('Idioma inválido.');
+  limit(infoLimit, req);
   const dir = await makeTempDir();
   try {
     const files = await fetchSubs(c.url, [lang], dir);
@@ -327,7 +352,11 @@ const routes = {
 };
 
 const server = http.createServer(async (req, res) => {
-  const handler = routes[`${req.method} ${req.url.split('?')[0]}`];
+  const path = req.url.split('?')[0];
+  if (path === '/healthz') return send(res, 200, { ok: true }); // sin contraseña: lo usa el healthcheck de Docker
+  const denied = auth.check(req);
+  if (denied) return send(res, denied.status, { error: denied.error }, denied.headers);
+  const handler = routes[`${req.method} ${path}`];
   try {
     if (handler) return await handler(req, res);
     if (req.method === 'GET') return await serveStatic(req, res);
@@ -346,11 +375,11 @@ async function boot() {
   await jobs.init();
   await subs.init();
   cleanOutbox(OUTBOX, OUTBOX_HOURS);
-  setInterval(() => cleanOutbox(OUTBOX, OUTBOX_HOURS), 3600_000).unref();
-  if (process.env.TELEGRAM_BOT_TOKEN) {
+  setInterval(() => { cleanOutbox(OUTBOX, OUTBOX_HOURS); jobLimit.sweep(); infoLimit.sweep(); auth.sweep(); }, 3600_000).unref();
+  if (!DEMO.on && process.env.TELEGRAM_BOT_TOKEN) {
     createTelegram({ token: process.env.TELEGRAM_BOT_TOKEN, chatId: process.env.TELEGRAM_CHAT_ID, jobs, list: listEntries, getSettings: async () => settings }).start();
   }
-  server.listen(PORT, HOST, () => console.log(`ytconvert en http://${HOST}:${PORT}${LIBRARY_DIR ? ` · biblioteca: ${LIBRARY_DIR}` : ''}`));
+  server.listen(PORT, HOST, () => console.log(`ytconvert en http://${HOST}:${PORT}${LIBRARY_DIR ? ` · biblioteca: ${LIBRARY_DIR}` : ''}${auth.enabled ? ' · con contraseña' : ''}${DEMO.on ? ' · MODO DEMO' : ''}`));
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) boot();

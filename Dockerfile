@@ -19,5 +19,6 @@ USER node
 ENV HOST=0.0.0.0 PORT=3100 NODE_ENV=production DATA_DIR=/data
 EXPOSE 3100
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:3100/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-CMD ["sh", "-c", "(./bin/yt-dlp -U >/dev/null 2>&1 || true) & exec node server.js"]
+  CMD node -e "fetch('http://127.0.0.1:3100/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# YTDLP_AUTOUPDATE=0 desactiva la actualización de yt-dlp al arrancar
+CMD ["sh", "-c", "if [ \"$YTDLP_AUTOUPDATE\" != \"0\" ]; then (./bin/yt-dlp -U >/dev/null 2>&1 || true) & fi; exec node server.js"]

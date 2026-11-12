@@ -2704,3 +2704,15 @@ select:focus-visible, .set-field input[type="text"]:focus-visible, .sub-form inp
 }
 @media (max-width: 420px) { .ad-copy small { display: none; } }
 @media (forced-colors: active) { .ribbon-ad { border: 1px solid CanvasText; } }
+
+/* Aviso de instancia demo */
+.demo-banner {
+  margin: 0;
+  padding: 8px var(--gutter);
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+  box-shadow: inset 0 -1px 0 0 color-mix(in oklab, var(--accent) 25%, transparent);
+}
+body.demo .job-actions .ghost { display: none; }

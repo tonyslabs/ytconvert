@@ -266,5 +266,15 @@ document.addEventListener('drop', (e) => {
 });
 
 // arranque
-cfgReady.then(() => { refresh(); });
+cfgReady.then(() => {
+  if (cfg.demo) {
+    // Instancia de demostración: sin historial editable, suscripciones ni ajustes globales
+    document.body.classList.add('demo');
+    panel.querySelectorAll('.ptab[data-tab=history], .ptab[data-tab=subs], .ptab[data-tab=settings]').forEach((b) => { b.hidden = true; });
+    const banner = $('demoBanner');
+    banner.textContent = `Demo compartida: hasta ${cfg.demo.maxMinutes} min por video y ${cfg.demo.maxList} pistas por lista. Para uso sin límites, instala tu propia copia con Docker.`;
+    banner.hidden = false;
+  }
+  refresh();
+});
 })();

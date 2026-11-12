@@ -1,0 +1,27 @@
+# Drstify: instalación para un solo usuario.   docker compose up -d   →   http://127.0.0.1:3100
+services:
+  drstify:
+    image: ghcr.io/tonyslabs/ytconvert:latest   # o fija una versión: ghcr.io/tonyslabs/ytconvert:v1.0.0
+    # build: .                                  # alternativa: construir la imagen aquí
+    container_name: drstify
+    restart: unless-stopped
+    env_file:
+      - path: .env        # opcional: copia .env.example a .env
+        required: false
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - drstify-data:/data
+    ports:
+      # Solo local por defecto. Para abrirlo a tu LAN/tailnet cambia 127.0.0.1 por esa IP
+      # y define AUTH_PASSWORD en .env. No lo publiques en internet sin contraseña.
+      - "127.0.0.1:3100:3100"
+    # Endurecimiento
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 2
+
+volumes:
+  drstify-data:
