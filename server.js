@@ -79,11 +79,11 @@ async function handlePlatform(req, res) {
   send(res, 200, await p.lookup({ artist: artist.trim(), title: title.trim() }));
 }
 
-// Solo se aceptan carátulas de la CDN de Deezer (evita SSRF hacia otros hosts).
+// Solo se aceptan carátulas de las CDN de Deezer, Spotify y YouTube Music (evita SSRF hacia otros hosts).
 async function fetchCover(url, dir) {
   let u;
   try { u = new URL(url); } catch { return null; }
-  if (u.protocol !== 'https:' || !/(^|\.)dzcdn\.net$/i.test(u.hostname)) return null;
+  if (u.protocol !== 'https:' || !/(^|\.)(dzcdn\.net|scdn\.co|googleusercontent\.com)$/i.test(u.hostname)) return null;
   const r = await fetch(u, { signal: AbortSignal.timeout(15000) });
   if (!r.ok || !/^image\//.test(r.headers.get('content-type') || '')) return null;
   const buf = Buffer.from(await r.arrayBuffer());

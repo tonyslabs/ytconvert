@@ -4,6 +4,9 @@ services:
     image: ghcr.io/tonyslabs/ytconvert:latest
     container_name: ytconvert
     restart: unless-stopped
+    environment:
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}      # van en ~/docker/apps/ytconvert/.env (no en el repo)
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
     ports:
       - "100.76.255.29:8094:3100"   # acceso por tailnet para probar (hl:8094)
     networks: [core]                # misma red que cloudflared -> el túnel apunta a http://ytconvert:3100
